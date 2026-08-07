@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">微信视频保存器</string>
+    <string name="app_name">微信视频转文字</string>
     <string name="scan_wechat">扫描微信视频</string>
     <string name="save_to_gallery">保存到相册</string>
 </resources>
