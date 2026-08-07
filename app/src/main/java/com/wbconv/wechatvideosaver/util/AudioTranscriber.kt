@@ -1,30 +1,27 @@
 package com.wbconv.wechatvideosaver.util
 
 import android.content.Context
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.net.Uri
 import android.util.Log
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.ReturnCode
 import org.json.JSONObject
 import org.vosk.LibVosk
 import org.vosk.Model
 import org.vosk.Recognizer
-import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.IOException
 import java.io.InputStream
 import java.util.zip.ZipInputStream
 
 /**
  * 视频音频提取 + 离线中文转写（v3 核心）
  *
- * 流程：
- *   1. 把视频 contentUri 拷贝到缓存文件
- *   2. FFmpegKit 提取音频 → 16kHz 单声道 s16le PCM
- *   3. Vosk 离线模型逐块识别 → 拼接成文字
- *
- * 模型：vosk-model-small-cn-0.22（构建时下载进 APK 的 assets，首次运行解压到 filesDir）
+ * 音频提取：使用 Android 内置 MediaExtractor + MediaCodec 解码音频轨，
+ *           再重采样为 16kHz 单声道 16bit PCM（Vosk 标准输入）。无需任何外部库。
+ * 语音识别：Vosk 离线中文模型（构建时下载进 APK 的 assets，首次运行解压）。
  * 全程离线，不上传任何数据。
  */
 object AudioTranscriber {
@@ -32,6 +29,7 @@ object AudioTranscriber {
     private const val TAG = "AudioTranscriber"
     private const val MODEL_ZIP = "vosk-model-small-cn-0.22.zip"
     private const val MODEL_DIR = "vosk-model-small-cn-0.22"
+    private const val TARGET_RATE = 16000
 
     @Volatile private var model: Model? = null
     @Volatile private var modelReady = false
@@ -46,9 +44,7 @@ object AudioTranscriber {
             if (!File(modelDir, "conf/model.conf").exists()) {
                 Log.i(TAG, "解压离线识别模型...")
                 modelsRoot.mkdirs()
-                context.assets.open(MODEL_ZIP).use { zip ->
-                    unzip(zip, modelsRoot)
-                }
+                context.assets.open(MODEL_ZIP).use { zip -> unzip(zip, modelsRoot) }
             }
             LibVosk.load()
             model = Model(modelDir.absolutePath)
@@ -70,28 +66,14 @@ object AudioTranscriber {
         val workDir = File(context.cacheDir, "transcribe_${System.currentTimeMillis()}")
         workDir.mkdirs()
         try {
-            val videoFile = File(workDir, "input.mp4")
-            copyUriToFile(context, videoUri, videoFile)
-            if (videoFile.length() == 0L) {
-                Log.e(TAG, "视频文件为空")
-                return null
-            }
-
             val pcmFile = File(workDir, "audio.pcm")
-            // 提取音频：去视频、单声道、16k、16bit 小端 PCM（Vosk 标准输入）
-            val cmd = "-y -i \"${videoFile.absolutePath}\" -vn -ac 1 -ar 16000 -f s16le \"${pcmFile.absolutePath}\""
-            val session = FFmpegKit.execute(cmd)
-            if (!ReturnCode.isSuccess(session.returnCode) || !pcmFile.exists() || pcmFile.length() == 0L) {
-                Log.e(TAG, "FFmpeg 提取音频失败，returnCode=${session.returnCode}")
+            if (!extractAudioToPcm(context, videoUri, pcmFile)) {
+                Log.e(TAG, "音频提取失败")
                 return null
             }
 
-            val m = model ?: run {
-                Log.e(TAG, "模型未初始化")
-                return null
-            }
-
-            val recognizer = Recognizer(m, 16000.0f)
+            val m = model ?: run { Log.e(TAG, "模型未初始化"); return null }
+            val recognizer = Recognizer(m, TARGET_RATE.toFloat())
             val bytes = pcmFile.readBytes()
             val chunk = 4000
             val sb = StringBuilder()
@@ -120,16 +102,132 @@ object AudioTranscriber {
         }
     }
 
-    private fun copyUriToFile(context: Context, uri: Uri, out: File) {
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(out).use { output -> input.copyTo(output) }
-        } ?: throw IOException("无法打开视频: $uri")
+    /**
+     * 用 MediaExtractor + MediaCodec 解码视频中的音频轨，
+     * 重采样为 16kHz 单声道 16bit PCM 写入 out 文件。
+     */
+    private fun extractAudioToPcm(context: Context, uri: Uri, out: File): Boolean {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(context, uri, null)
+        } catch (e: Exception) {
+            Log.e(TAG, "无法打开视频数据源", e)
+            return false
+        }
+
+        var trackIdx = -1
+        var srcRate = 44100
+        var channels = 1
+        for (i in 0 until extractor.trackCount) {
+            val fmt = extractor.getTrackFormat(i)
+            val mime = fmt.getString(MediaFormat.KEY_MIME) ?: continue
+            if (mime.startsWith("audio/")) {
+                trackIdx = i
+                if (fmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) srcRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                if (fmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) channels = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                break
+            }
+        }
+        if (trackIdx < 0) {
+            Log.e(TAG, "未找到音频轨")
+            extractor.release()
+            return false
+        }
+
+        val audioFormat = extractor.getTrackFormat(trackIdx)
+        val mime = audioFormat.getString(MediaFormat.KEY_MIME) ?: return false
+        extractor.selectTrack(trackIdx)
+
+        val decoder = MediaCodec.createDecoderByType(mime)
+        decoder.configure(audioFormat, null, null, 0)
+        decoder.start()
+
+        val bufferInfo = MediaCodec.BufferInfo()
+        val pcmChunks = mutableListOf<ByteArray>()
+        var sawInputEOS = false
+        var sawOutputEOS = false
+        val timeoutUs = 10000L
+
+        while (!sawOutputEOS) {
+            if (!sawInputEOS) {
+                val inId = decoder.dequeueInputBuffer(timeoutUs)
+                if (inId >= 0) {
+                    val inBuf = decoder.getInputBuffer(inId) ?: continue
+                    val sampleSize = extractor.readSampleData(inBuf, 0)
+                    if (sampleSize < 0) {
+                        decoder.queueInputBuffer(inId, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        sawInputEOS = true
+                    } else {
+                        decoder.queueInputBuffer(inId, 0, sampleSize, extractor.sampleTime, 0)
+                        extractor.advance()
+                    }
+                }
+            }
+
+            val outId = decoder.dequeueOutputBuffer(bufferInfo, timeoutUs)
+            if (outId >= 0) {
+                val outBuf = decoder.getOutputBuffer(outId) ?: run {
+                    decoder.releaseOutputBuffer(outId, false); continue
+                }
+                outBuf.position(0)
+                val chunk = ByteArray(bufferInfo.size)
+                outBuf.get(chunk)
+                decoder.releaseOutputBuffer(outId, false)
+                pcmChunks.add(chunk)
+                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) sawOutputEOS = true
+            } else if (outId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                val newFmt = decoder.outputFormat
+                if (newFmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                    srcRate = newFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                }
+                if (newFmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                    channels = newFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                }
+            }
+        }
+
+        decoder.stop()
+        decoder.release()
+        extractor.release()
+
+        if (pcmChunks.isEmpty()) return false
+        val src = ByteArrayOutputStream()
+        pcmChunks.forEach { src.write(it) }
+        val resampled = resampleToMono16k(src.toByteArray(), srcRate, channels)
+        if (resampled.isEmpty()) return false
+        FileOutputStream(out).use { it.write(resampled) }
+        return true
+    }
+
+    /** 线性插值重采样 + 多声道下混为单声道，输出 16kHz 16bit 小端 PCM */
+    private fun resampleToMono16k(src: ByteArray, srcRate: Int, channels: Int): ByteArray {
+        if (srcRate <= 0) return byteArrayOf()
+        val numSrc = src.size / 2
+        val numDst = (numSrc.toLong() * TARGET_RATE / srcRate).toInt()
+        if (numDst <= 0) return byteArrayOf()
+        val dst = ByteArray(numDst * 2)
+        var di = 0
+        for (i in 0 until numDst) {
+            val srcPos = i * srcRate / TARGET_RATE
+            var sum = 0
+            for (c in 0 until channels) {
+                val idx = (srcPos * channels + c) * 2
+                if (idx + 1 < src.size) {
+                    val s = (src[idx].toInt() and 0xFF) or (src[idx + 1].toInt() shl 8)
+                    sum += if (s >= 0x8000) s - 0x10000 else s
+                }
+            }
+            val sample = (sum / channels).coerceIn(-32768, 32767)
+            dst[di++] = (sample and 0xFF).toByte()
+            dst[di++] = ((sample shr 8) and 0xFF).toByte()
+        }
+        return dst
     }
 
     private fun unzip(zipStream: InputStream, destDir: File) {
         destDir.mkdirs()
         val buffer = ByteArray(8192)
-        ZipInputStream(BufferedInputStream(zipStream)).use { zis ->
+        ZipInputStream(zipStream).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
                 val file = File(destDir, entry.name)
@@ -139,9 +237,7 @@ object AudioTranscriber {
                     file.parentFile?.mkdirs()
                     FileOutputStream(file).use { fos ->
                         var len: Int
-                        while (zis.read(buffer).also { len = it } > 0) {
-                            fos.write(buffer, 0, len)
-                        }
+                        while (zis.read(buffer).also { len = it } > 0) fos.write(buffer, 0, len)
                     }
                 }
                 zis.closeEntry()

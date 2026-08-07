@@ -49,8 +49,6 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // 音频提取（FFmpegKit，含 AAC 解码 + PCM 输出）
-    implementation("com.arthenica:ffmpeg-kit-full-gpl:6.0.LTS")
-    // 离线中文语音识别
+    // 离线中文语音识别（音频提取改用系统 MediaExtractor，无需 ffmpeg 依赖）
     implementation("com.alphacephei:vosk-android:0.3.47")
 }
