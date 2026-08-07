@@ -11,8 +11,11 @@ android {
         applicationId = "com.wbconv.wechatvideosaver"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "3.0"
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     buildTypes {
@@ -28,6 +31,12 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    packaging {
+        jniLibs {
+            // FFmpegKit 与 Vosk 都可能自带 libc++_shared.so，取第一个避免重复冲突
+            pickFirsts += setOf("**/libc++_shared.so")
+        }
+    }
 }
 
 dependencies {
@@ -39,4 +48,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // 音频提取（LGPL 版，含 AAC 解码 + PCM 输出）
+    implementation("com.arthenica:ffmpeg-kit-min:6.0.LTS")
+    // 离线中文语音识别
+    implementation("com.alphacephei:vosk-android:0.3.47")
 }
