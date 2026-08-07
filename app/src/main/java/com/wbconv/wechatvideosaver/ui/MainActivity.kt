@@ -83,6 +83,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // 任意位置选择视频文件 → 转文字
+    private val pickVideoLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+            startTranscribe(uri, "已选视频")
+        }
+    }
+
+    private fun startTranscribe(uri: Uri, name: String) {
+        val intent = Intent(this, TranscribeActivity::class.java).apply {
+            putExtra("video_uri", uri.toString())
+            putExtra("video_name", name)
+        }
+        startActivity(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -160,14 +180,15 @@ class MainActivity : AppCompatActivity() {
     // ==================== 扫描 ====================
 
     private fun showScanOptions() {
-        val options = arrayOf("扫描相册视频", "授权微信目录（直读缓存）", "使用帮助")
+        val options = arrayOf("扫描相册视频", "授权微信目录（直读缓存）", "选择视频文件转文字", "使用帮助")
         AlertDialog.Builder(this)
             .setTitle("选择操作")
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> checkPermissionAndScan()
                     1 -> launchSafPicker()
-                    2 -> showHelp()
+                    2 -> pickVideoLauncher.launch("video/*")
+                    3 -> showHelp()
                 }
             }
             .show()
@@ -233,15 +254,16 @@ class MainActivity : AppCompatActivity() {
     // ==================== 操作 ====================
 
     private fun showActionDialog(item: VideoItem) {
-        val options = arrayOf("播放", "保存到相册", "分享到其他 App")
+        val options = arrayOf("播放", "提取文字", "保存到相册", "分享到其他 App")
         AlertDialog.Builder(this)
             .setTitle(item.name)
             .setMessage("大小：${item.sizeFormatted}\n时长：${item.durationFormatted}\n日期：${item.dateFormatted}\n来源：${item.bucketName}")
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> VideoScanner.playVideo(this, item)
-                    1 -> saveSingle(item)
-                    2 -> VideoScanner.shareVideo(this, item)
+                    1 -> startTranscribe(item.contentUri, item.name)
+                    2 -> saveSingle(item)
+                    3 -> VideoScanner.shareVideo(this, item)
                 }
             }
             .show()
@@ -299,7 +321,7 @@ class MainActivity : AppCompatActivity() {
     private fun showHelp() {
         AlertDialog.Builder(this)
             .setTitle("使用帮助")
-            .setMessage("【保存微信视频】\n1. 微信里点开视频 → 全屏播放 → 右下角「保存视频」\n2. 回到本 App 重新扫描，视频就会出现\n\n【直读微信缓存】\n点右下角按钮 →「授权微信目录」→ 按提示选择 Android/data/com.tencent.mm\n\n【提取视频文字】\n选中视频 → 分享 → 发送给 WorkBuddy，AI 自动提取音频文字\n\n【多选操作】\n长按任意视频进入多选，可批量保存或分享")
+            .setMessage("【提取视频文字（核心功能）】\n方式一：点右下角按钮 →「选择视频文件转文字」→ 选微信里已保存的视频\n方式二：先「扫描相册」或「授权微信目录」找到视频 → 点视频 →「提取文字」\n识别在手机本地离线完成，无需联网，文字可复制或分享。\n\n【为什么有的视频找不到】\nAndroid 11+ 封锁了微信私有目录。最稳妥的办法：在微信里点开视频 → 全屏播放 → 右下角「保存视频」，再回本 App 处理。\n\n【直读微信缓存】\n点右下角按钮 →「授权微信目录」→ 选择 Android/data/com.tencent.mm（部分系统不支持）。\n\n【多选操作】\n长按任意视频进入多选，可批量保存或分享。")
             .setPositiveButton("知道了", null)
             .show()
     }
