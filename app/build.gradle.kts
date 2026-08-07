@@ -14,7 +14,7 @@ android {
         versionCode = 3
         versionName = "3.0"
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
     }
 
@@ -49,8 +49,8 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // 音频提取（LGPL 版，含 AAC 解码 + PCM 输出）
-    implementation("com.arthenica:ffmpeg-kit-min:6.0.LTS")
+    // 音频提取（FFmpegKit，含 AAC 解码 + PCM 输出）
+    implementation("com.arthenica:ffmpeg-kit-full-gpl:6.0.LTS")
     // 离线中文语音识别
     implementation("com.alphacephei:vosk-android:0.3.47")
 }
