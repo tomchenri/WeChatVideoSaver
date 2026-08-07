@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "WeChatVideoSaver"
-include ':app'
+include(":app")
