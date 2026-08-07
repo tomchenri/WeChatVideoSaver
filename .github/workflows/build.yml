@@ -43,12 +43,12 @@ jobs:
     - name: Push build log on failure
       if: failure()
       run: |
-        tail -150 build.log > build-tail.txt
-        LOG_B64=$(base64 -w0 build-tail.txt)
+        { grep -A 60 "What went wrong" build.log; echo "=== HEAD ==="; head -50 build.log; } > build-key.txt || cp build.log build-key.txt
+        LOG_B64=$(base64 -w0 build-key.txt)
         curl -s -X PUT \
           -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
           -H "Content-Type: application/json" \
-          "https://api.github.com/repos/${{ github.repository }}/contents/build-tail.txt" \
+          "https://api.github.com/repos/${{ github.repository }}/contents/build-key.txt" \
           -d "{\"message\":\"build log from run ${{ github.run_number }}\",\"content\":\"$LOG_B64\",\"branch\":\"main\"}" || true
 
     - name: Upload APK
