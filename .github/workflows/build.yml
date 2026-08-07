@@ -34,6 +34,20 @@ jobs:
       with:
         gradle-version: '8.5'
 
+    - name: Download Vosk Chinese model (offline ASR, bundled into APK)
+      run: |
+        mkdir -p app/src/main/assets
+        for i in 1 2 3; do
+          curl -fsSL -o app/src/main/assets/vosk-model-small-cn-0.22.zip \
+            https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip && break
+          echo "retry $i"; sleep 3
+        done
+        ls -lh app/src/main/assets/
+        SIZE=$(stat -c%s app/src/main/assets/vosk-model-small-cn-0.22.zip 2>/dev/null || echo 0)
+        if [ "$SIZE" -lt 1000000 ]; then
+          echo "模型下载过小，构建中止"; exit 1
+        fi
+
     - name: Build Debug APK
       run: |
         set -o pipefail
