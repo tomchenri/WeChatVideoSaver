@@ -28,5 +28,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ui.TranscribeActivity"
+            android:exported="false"
+            android:label="提取视频文字" />
+
     </application>
 </manifest>
